@@ -1,0 +1,67 @@
+Create a program for populating a netbox instance over API
+
+vars:
+- netbox_url: http://192.168.218.101:8000
+- netbox_version: NetBox Community v4.2.6-Docker-3.2.0
+- netbox_token: 3af7aa0f6cfbcd1b58b31161bbfe26df3a3b3d09
+- fortigate_url: http://10.0.101.1:4443
+- fortigate_api_key: mq3qGzGt9796x93Hzy59drhNHtg3xq
+- Microsoft api details:
+	Z7h8Q~AnMrISHlzoQalqEiUOlkP0bvzZuxaawaEc
+	client id: fe0a25ab-5097-44b7-9643-bc16dae61226
+	tenant id: ad0adcf6-35db-4658-af0d-7dd26ceff462
+
+# Project: NetBox Infra Sync (Containerized)
+
+## Goal
+Continuously keep NetBox in sync with FortiGate, Intune (Graph API), and ESET.
+
+## Outcomes (acceptance)
+- ≥95% infra reflected in NetBox within 24h (configurable)
+- Full sync <5 min for current estate
+- Idempotent: re-running causes no unintended diffs
+- Clear audit trail of creates/updates/deletes
+
+## High-level design
+- **Workers (fetchers):** `fortigate`, `intune`, `eset`
+- **Normalizer:** unifies models → canonical schema
+- **Reconciler:** diffs canonical vs NetBox → PATCH/POST/DELETE
+- **State store:** last-seen hashes & run logs (SQLite or Postgres; SQLite ok to start)
+- **API clients:** NetBox + providers (rate-limited, retried, backoff)
+- **Scheduler:** cron-like inside container **or** external (K8s CronJob)
+
+## Data scope → NetBox targets
+- **FortiGate:** VLANs, prefixes, interfaces, routes (optional), ARP/DHCP leases → `ipam.*`, `dcim.Interface`, `dcim.Device` (FW), `tenancy.*`
+- **Intune:** Devices, owners, OS, compliance → `dcim.Device`/`virtualization.VirtualMachine` (choose strategy), `custom_fields`: `owner`, `compliance`, `serial`, `device_id`
+- **ESET:** NIC details, AV status → extend `custom_fields/tags`: `av_status`, `eset_last_seen`, per-interface MAC/vendor
+
+## Reconciliation rules (keyed by)
+- **Devices:** prefer stable IDs (Intune `azureDeviceId` / ESET UUID / FortiGate SN). Maintain an origin map `{external_id -> netbox_id}`
+- **Interfaces:** match by `(device, mac)`; fallback `(device, name)`
+- **IP addresses:** authoritative from FortiGate; Intune/ESET augment
+- **Deletes:** soft-delete by tag `source:xyz` + `stale_since`; hard-delete after N days (config)
+
+## Containerization
+- Single image with subcommands:
+  - `sync fortigate|intune|eset|all`
+  - `serve` (HTTP /healthz, /metrics)
+  - `migrate` (init state DB)
+- Minimal runtime deps; distroless or alpine
+- Config via **env vars** (12-factor):
+  - `NETBOX_URL`, `NETBOX_TOKEN`
+  - `FGT_HOST`, `FGT_TOKEN`
+  - `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`
+  - `ESET_BASE_URL`, `ESET_TOKEN`
+  - `SYNC_INTERVAL_CRON` (if internal scheduler)
+  - `DELETE_GRACE_DAYS`, `LOG_LEVEL`
+- Secrets mounted from Docker/K8s secrets
+
+### Example `docker-compose.yml`
+```yaml
+services:
+  netbox-sync:
+    image: registry.example/netbox-sync:latest
+    command: ["sync","all"]
+    env_file: .env
+    restart: unless-stopped
+

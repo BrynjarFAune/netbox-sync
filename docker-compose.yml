@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  netbox-sync:
+    build: .
+    container_name: netbox-infra-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # NetBox configuration
+      NETBOX_URL: ${NETBOX_URL:-http://192.168.218.101:8000}
+      NETBOX_TOKEN: ${NETBOX_TOKEN}
+      
+      # FortiGate configuration
+      FGT_HOST: ${FGT_HOST:-http://10.0.101.1:4443}
+      FGT_TOKEN: ${FGT_TOKEN}
+      
+      # Microsoft Graph/Intune configuration
+      GRAPH_TENANT_ID: ${GRAPH_TENANT_ID}
+      GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID}
+      GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET}
+      
+      # ESET configuration (optional)
+      ESET_BASE_URL: ${ESET_BASE_URL:-}
+      ESET_TOKEN: ${ESET_TOKEN:-}
+      
+      # Sync configuration
+      SYNC_INTERVAL_CRON: ${SYNC_INTERVAL_CRON:-0 */6 * * *}
+      DELETE_GRACE_DAYS: ${DELETE_GRACE_DAYS:-7}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      
+      # Database configuration
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///app/data/netbox_sync.db}
+      
+      # API rate limiting
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-10}
+      API_RETRY_ATTEMPTS: ${API_RETRY_ATTEMPTS:-3}
+      API_BACKOFF_FACTOR: ${API_BACKOFF_FACTOR:-1.0}
+    
+    volumes:
+      - netbox-sync-data:/app/data
+      # Mount secrets from host if needed
+      # - ./secrets:/app/secrets:ro
+    
+    ports:
+      - "8080:8080"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Run one-time sync by default, override with command
+    command: ["netbox-sync", "sync", "all"]
+
+  # Optional: Run as a server with scheduled syncs
+  netbox-sync-server:
+    build: .
+    container_name: netbox-infra-sync-server
+    restart: unless-stopped
+    environment:
+      # Same environment as above
+      NETBOX_URL: ${NETBOX_URL:-http://192.168.218.101:8000}
+      NETBOX_TOKEN: ${NETBOX_TOKEN}
+      FGT_HOST: ${FGT_HOST:-http://10.0.101.1:4443}
+      FGT_TOKEN: ${FGT_TOKEN}
+      GRAPH_TENANT_ID: ${GRAPH_TENANT_ID}
+      GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID}
+      GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET}
+      ESET_BASE_URL: ${ESET_BASE_URL:-}
+      ESET_TOKEN: ${ESET_TOKEN:-}
+      SYNC_INTERVAL_CRON: ${SYNC_INTERVAL_CRON:-0 */6 * * *}
+      DELETE_GRACE_DAYS: ${DELETE_GRACE_DAYS:-7}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///app/data/netbox_sync.db}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-10}
+      API_RETRY_ATTEMPTS: ${API_RETRY_ATTEMPTS:-3}
+      API_BACKOFF_FACTOR: ${API_BACKOFF_FACTOR:-1.0}
+    
+    volumes:
+      - netbox-sync-data:/app/data
+    
+    ports:
+      - "8081:8080"
+    
+    # Run as HTTP server for metrics and health checks
+    command: ["netbox-sync", "serve"]
+    
+    profiles:
+      - server
+
+volumes:
+  netbox-sync-data:
+    driver: local
