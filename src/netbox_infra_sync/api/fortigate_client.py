@@ -17,19 +17,20 @@ class FortiGateClient(RateLimitedClient):
             retry_attempts=config.api_retry_attempts,
             backoff_factor=config.api_backoff_factor
         )
-        self.base_url = f"{config.fortigate_host}/api/v2"
+        self.base_url = f"{config.fortigate_host}"
         self.headers = {
             'Authorization': f'Bearer {config.fortigate_token}',
             'Content-Type': 'application/json'
         }
     
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get system status."""
+    def get_devices(self) -> List[Dict[str, Any]]:
+        """Get devices from FortiGate using the working endpoint."""
         try:
-            response = self.get(f"{self.base_url}/monitor/system/status", headers=self.headers)
-            return response.json()
+            response = self.get(f"{self.base_url}/monitor/user/device/query", headers=self.headers)
+            data = response.json()
+            return data.get('results', [])
         except Exception as e:
-            logger.error(f"Error fetching system status: {e}")
+            logger.error(f"Error fetching devices: {e}")
             raise
     
     def get_interfaces(self) -> List[Dict[str, Any]]:

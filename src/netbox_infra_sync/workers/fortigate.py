@@ -31,14 +31,18 @@ class FortiGateWorker(BaseWorker):
         errors = []
         
         try:
-            # Get system status for device info
-            logger.info("Fetching FortiGate system status...")
-            system_status = self.client.get_system_status()
+            # Get devices from FortiGate using the working endpoint
+            logger.info("Fetching FortiGate devices...")
+            devices = self.client.get_devices()
             
-            # Create device entry for the FortiGate itself
-            device = self.normalizer.normalize_fortigate_device(system_status)
-            data['devices'].append(device)
-            device_id = device.external_id
+            # Process each device
+            for device_data in devices:
+                try:
+                    canonical_device = self.normalizer.normalize_fortigate_device(device_data)
+                    data['devices'].append(canonical_device)
+                except Exception as e:
+                    errors.append(f"Error normalizing device {device_data.get('hostname', 'unknown')}: {e}")
+                    logger.error(f"Error processing device: {e}")
             
             # Get interfaces
             logger.info("Fetching FortiGate interfaces...")
