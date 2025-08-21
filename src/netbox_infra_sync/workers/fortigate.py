@@ -31,6 +31,13 @@ class FortiGateWorker(BaseWorker):
         errors = []
         
         try:
+            # Test connectivity first
+            logger.info("Testing FortiGate connectivity...")
+            if not self.client.test_connectivity():
+                raise Exception("Failed to connect to FortiGate API. Check your configuration.")
+            
+            logger.info("FortiGate connectivity test passed!")
+            
             # Get devices from FortiGate using the working endpoint
             logger.info("Fetching FortiGate devices...")
             devices = self.client.get_devices()

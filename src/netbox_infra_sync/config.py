@@ -13,6 +13,7 @@ class AppConfig:
         # FortiGate configuration
         self.fortigate_host = os.getenv('FGT_HOST')
         self.fortigate_token = os.getenv('FGT_TOKEN')
+        self.fortigate_vdom = os.getenv('FGT_VDOM', 'root')
         
         # Microsoft Graph/Intune configuration
         self.graph_tenant_id = os.getenv('GRAPH_TENANT_ID')
