@@ -22,6 +22,7 @@ class FortiGateClient(RateLimitedClient):
         self.api_token = config.fortigate_token
         self.vdom = config.fortigate_vdom
         self.headers = {
+            'Authorization': f'Bearer {config.fortigate_token}',
             'Content-Type': 'application/json'
         }
         # Disable SSL verification for self-signed certs (common with FortiGate)
@@ -33,12 +34,13 @@ class FortiGateClient(RateLimitedClient):
     def _make_request(self, endpoint: str) -> Dict[str, Any]:
         """Make a request to FortiGate API with proper authentication."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        params = {
-            'access_token': self.api_token,
-            'vdom': self.vdom
-        }
+        # Add vdom as parameter if needed (some endpoints require it)
+        params = {}
+        if self.vdom and self.vdom != 'root':
+            params['vdom'] = self.vdom
+            
         try:
-            response = self.get(url, headers=self.headers, params=params)
+            response = self.get(url, headers=self.headers, params=params if params else None)
             data = response.json()
             
             # Check if FortiGate returned an error
