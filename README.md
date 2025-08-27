@@ -178,12 +178,13 @@ The application consists of several key components:
 
 ### Intune → NetBox
 - Devices → `dcim.Device` or `virtualization.VirtualMachine`
-- Custom fields: `owner`, `compliance_status`, `serial_number`, `device_id`
+- Device attributes: `owner`, `compliance_status`, `serial_number`, `manufacturer`, `model`
+- Tags: `source:intune`, `compliance:compliant`, `enrollment:autopilot`, `mgmt_state:managed`, `owner_domain:company.com`
 
 ### ESET → NetBox
 - Network details → Interface MAC addresses
-- Custom fields: `av_status`, `eset_last_seen`
-- Tags for antivirus status
+- Device attributes: `av_status`, `last_seen`
+- Tags: `source:eset`, `av_status:protected`, `eset_version:X.Y.Z`, `threat_count:N`
 
 ## Monitoring and Health Checks
 
@@ -273,7 +274,10 @@ For Kubernetes deployment, use the Docker image with:
 - Review database query performance
 
 ### Logging
-Set `LOG_LEVEL=DEBUG` to enable detailed logging for troubleshooting.
+Control log verbosity per run:
+- `docker-compose run --rm -e LOG_LEVEL=ERROR netbox-sync netbox-sync sync all` (only errors)
+- `docker-compose run --rm -e LOG_LEVEL=WARNING netbox-sync netbox-sync sync all` (warnings and errors)  
+- `docker-compose run --rm -e LOG_LEVEL=DEBUG netbox-sync netbox-sync sync all` (full debugging)
 
 ### Debug Commands
 ```bash
