@@ -24,7 +24,13 @@ class ESETClient:
             
         try:
             url = f"https://{self.region}.business-account.iam.eset.systems/oauth/token"
-            data = f"grant_type=password&username={self.username}&password={self.password}"
+            
+            # Use form data like the Rust code
+            data = {
+                'grant_type': 'password',
+                'username': self.username,
+                'password': self.password
+            }
             
             response = requests.post(
                 url,
@@ -32,7 +38,7 @@ class ESETClient:
                     'Accept': 'application/json',
                     'Content-Type': 'application/x-www-form-urlencoded'
                 },
-                data=data
+                data=data  # requests will URL encode this automatically
             )
             
             if response.status_code == 200:
