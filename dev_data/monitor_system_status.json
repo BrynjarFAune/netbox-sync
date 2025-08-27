@@ -1,0 +1,17 @@
+{
+  "http_method": "GET",
+  "results": {
+    "model_name": "FortiGate",
+    "model_number": "100F",
+    "model": "FG100F",
+    "hostname": "tos-fw-01",
+    "log_disk_status": "not_available"
+  },
+  "vdom": "root",
+  "path": "system",
+  "name": "status",
+  "status": "success",
+  "serial": "FG100FTK21012829",
+  "version": "v7.4.5",
+  "build": 2702
+}

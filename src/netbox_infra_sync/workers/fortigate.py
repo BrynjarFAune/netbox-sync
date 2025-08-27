@@ -56,15 +56,37 @@ class FortiGateWorker(BaseWorker):
             interfaces = self.client.get_interfaces()
             interface_status = self.client.get_interface_status()
             
-            # Create status lookup
-            status_lookup = {iface['name']: iface for iface in interface_status}
+            logger.info(f"Interfaces type: {type(interfaces)}, length: {len(interfaces) if hasattr(interfaces, '__len__') else 'N/A'}")
+            logger.info(f"Interface status type: {type(interface_status)}, length: {len(interface_status) if hasattr(interface_status, '__len__') else 'N/A'}")
+            
+            # Handle FortiGate interface status format (dict with interface names as keys)
+            if isinstance(interface_status, dict):
+                # FortiGate returns interface status as {"interface_name": {data}, ...}
+                status_lookup = interface_status
+            elif isinstance(interface_status, list):
+                status_lookup = {iface['name']: iface for iface in interface_status if isinstance(iface, dict) and 'name' in iface}
+            else:
+                logger.warning(f"Interface status has unexpected format: {type(interface_status)}")
+                status_lookup = {}
+            
+            # Handle case where interfaces might not be a list
+            if not isinstance(interfaces, list):
+                logger.error(f"Interfaces is not a list: {type(interfaces)}")
+                interfaces = []
             
             for interface in interfaces:
                 try:
+                    # Skip if interface is not a dict
+                    if not isinstance(interface, dict):
+                        logger.warning(f"Interface is not a dict: {type(interface)}")
+                        continue
+                        
                     # Merge with status data
-                    status_data = status_lookup.get(interface['name'], {})
+                    status_data = status_lookup.get(interface.get('name', ''), {})
                     interface.update(status_data)
                     
+                    # Use a default device_id for now (FortiGate device)
+                    device_id = "fortigate_device"
                     canonical_interface = self.normalizer.normalize_fortigate_interface(
                         interface, device_id
                     )
@@ -99,20 +121,8 @@ class FortiGateWorker(BaseWorker):
                 errors.append(f"Error fetching DHCP leases: {e}")
                 logger.error(f"Error fetching DHCP leases: {e}")
             
-            # Get ARP table
-            logger.info("Fetching FortiGate ARP table...")
-            try:
-                arp_entries = self.client.get_arp_table()
-                for arp in arp_entries:
-                    try:
-                        canonical_ip = self.normalizer.normalize_fortigate_arp_entry(arp)
-                        data['ip_addresses'].append(canonical_ip)
-                    except Exception as e:
-                        errors.append(f"Error normalizing ARP entry {arp.get('ip')}: {e}")
-                        logger.error(f"Error processing ARP entry: {e}")
-            except Exception as e:
-                errors.append(f"Error fetching ARP table: {e}")
-                logger.error(f"Error fetching ARP table: {e}")
+            # Skip ARP table - endpoint not available on this FortiGate version
+            logger.info("Skipping ARP table (endpoint not available on this FortiGate version)")
             
             # Get firewall addresses for prefixes
             logger.info("Fetching FortiGate firewall addresses...")

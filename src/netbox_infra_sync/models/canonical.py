@@ -90,6 +90,7 @@ class CanonicalIPAddress(BaseModel):
     # DHCP/ARP details
     mac_address: Optional[str] = None
     lease_type: Optional[str] = None  # 'dhcp', 'static', 'arp'
+    client_hostname: Optional[str] = None  # For DHCP leases
     
     # Metadata
     source: str

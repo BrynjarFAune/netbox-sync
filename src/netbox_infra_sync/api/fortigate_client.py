@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Any, Optional
 import json
 import requests
+import os
 
 from ..config import AppConfig
 from .base import RateLimitedClient
@@ -30,9 +31,62 @@ class FortiGateClient(RateLimitedClient):
         # Suppress SSL warnings
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        # Development mode: save/load responses from JSON files
+        self.dev_mode = getattr(config, 'fortigate_dev_mode', os.getenv('FGT_DEV_MODE', 'false').lower() == 'true')
+        self.dev_data_dir = os.getenv('FGT_DEV_DATA_DIR', '/app/dev_data')
+        if self.dev_mode:
+            os.makedirs(self.dev_data_dir, exist_ok=True)
+            logger.info(f"FortiGate dev mode enabled, using data directory: {self.dev_data_dir}")
     
+    def _get_dev_filename(self, endpoint: str) -> str:
+        """Generate filename for dev mode JSON files."""
+        # Convert endpoint to safe filename
+        safe_endpoint = endpoint.strip('/').replace('/', '_').replace('?', '_')
+        return f"{safe_endpoint}.json"
+    
+    def _save_dev_response(self, endpoint: str, data: Dict[str, Any]) -> None:
+        """Save API response to JSON file in dev mode."""
+        if not self.dev_mode:
+            return
+            
+        filename = self._get_dev_filename(endpoint)
+        filepath = os.path.join(self.dev_data_dir, filename)
+        
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"Saved FortiGate response to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save dev response: {e}")
+    
+    def _load_dev_response(self, endpoint: str) -> Optional[Dict[str, Any]]:
+        """Load API response from JSON file in dev mode."""
+        if not self.dev_mode:
+            return None
+            
+        filename = self._get_dev_filename(endpoint)
+        filepath = os.path.join(self.dev_data_dir, filename)
+        
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                logger.info(f"Loaded FortiGate response from {filepath}")
+                return data
+        except Exception as e:
+            logger.error(f"Failed to load dev response: {e}")
+            
+        return None
+
     def _make_request(self, endpoint: str) -> Dict[str, Any]:
         """Make a request to FortiGate API with proper authentication."""
+        # In dev mode, try to load from file first
+        if self.dev_mode:
+            dev_data = self._load_dev_response(endpoint)
+            if dev_data is not None:
+                return dev_data
+        
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         # Add vdom as parameter if needed (some endpoints require it)
         params = {}
@@ -48,6 +102,10 @@ class FortiGateClient(RateLimitedClient):
                 error_code = data.get('error', 'Unknown error')
                 error_msg = data.get('error_description', 'No description')
                 raise Exception(f"FortiGate API error {error_code}: {error_msg}")
+            
+            # Save response in dev mode
+            if self.dev_mode:
+                self._save_dev_response(endpoint, data)
                 
             return data
         except requests.exceptions.RequestException as e:

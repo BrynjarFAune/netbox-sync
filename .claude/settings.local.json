@@ -5,7 +5,21 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "WebFetch(domain:10.0.101.1)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose:*)",
+      "Bash(mkdir:*)",
+      "Bash(grep:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose:*)",
+      "Bash(unset:*)",
+      "Bash(timeout 60 docker-compose run --rm netbox-sync netbox-sync sync all)",
+      "Bash(timeout 30 docker-compose run --rm netbox-sync python3 -c \"\nfrom netbox_infra_sync.config import AppConfig\nfrom netbox_infra_sync.api.netbox_client import NetBoxClient\n\nconfig = AppConfig()\nclient = NetBoxClient(config)\n\nprint(''Testing device creation...'')\ntest_device = {\n    ''name'': ''TEST-DEVICE-001'',\n    ''device_type'': client.get_or_create_device_type(''Generic'', ''Unknown''),\n    ''site'': client.get_or_create_site(''Default''),\n    ''device_role'': client.get_or_create_device_role(''Server''),\n    ''tags'': [''source:fortigate'']\n}\n\ntry:\n    result = client.create_or_update_device(test_device)\n    print(f''Success! Created device: {result[\"\"name\"\"]}'')\nexcept Exception as e:\n    print(f''Error: {e}'')\n\")",
+      "Bash(timeout 60 docker-compose run --rm netbox-sync netbox-sync sync fortigate)",
+      "Bash(timeout:*)",
+      "Bash(docker kill:*)",
+      "Read(/C:\\Users\\brynjar.aune\\Proj\\NetBox\\netbox_ingester\\src\\fetch/**)"
     ],
     "deny": [],
     "ask": []
