@@ -372,6 +372,59 @@ class NetBoxClient:
             logger.error(f"Error creating prefix: {e}")
             raise
     
+    def get_or_create_contact(self, contact_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get or create contact in NetBox."""
+        try:
+            email = contact_data.get('email')
+            name = contact_data.get('name', '')
+            
+            # Find existing contact by email
+            existing = None
+            if email:
+                contacts = list(self.api.tenancy.contacts.filter(email=email))
+                existing = contacts[0] if contacts else None
+            
+            if not existing and name:
+                contacts = list(self.api.tenancy.contacts.filter(name=name))
+                existing = contacts[0] if contacts else None
+            
+            if existing:
+                # Update existing contact
+                for key, value in contact_data.items():
+                    if key not in ['id'] and value:
+                        setattr(existing, key, value)
+                existing.save()
+                logger.info(f"Updated contact: {name} ({email})")
+                return existing.serialize()
+            else:
+                # Create new contact
+                new_contact = self.api.tenancy.contacts.create(contact_data)
+                logger.info(f"Created contact: {name} ({email})")
+                return new_contact.serialize()
+                
+        except Exception as e:
+            logger.error(f"Error creating/updating contact: {e}")
+            raise
+    
+    def assign_device_contact(self, device_name: str, contact_id: int) -> bool:
+        """Assign a contact to a device."""
+        try:
+            # Find the device
+            device = self.api.dcim.devices.get(name=device_name)
+            if not device:
+                logger.warning(f"Device {device_name} not found for contact assignment")
+                return False
+            
+            # Assign contact
+            device.primary_contact = contact_id
+            device.save()
+            logger.info(f"Assigned contact ID {contact_id} to device {device_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error assigning contact to device {device_name}: {e}")
+            return False
+    
     def delete_stale_objects(self, source: str, grace_days: int = 7):
         """Delete objects marked as stale for more than grace_days."""
         # This would implement soft-delete logic based on tags

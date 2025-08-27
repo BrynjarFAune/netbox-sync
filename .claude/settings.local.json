@@ -19,7 +19,8 @@
       "Bash(timeout 60 docker-compose run --rm netbox-sync netbox-sync sync fortigate)",
       "Bash(timeout:*)",
       "Bash(docker kill:*)",
-      "Read(/C:\\Users\\brynjar.aune\\Proj\\NetBox\\netbox_ingester\\src\\fetch/**)"
+      "Read(/C:\\Users\\brynjar.aune\\Proj\\NetBox\\netbox_ingester\\src\\fetch/**)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []

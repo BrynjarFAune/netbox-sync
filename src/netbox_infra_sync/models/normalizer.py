@@ -23,7 +23,7 @@ class DataNormalizer:
         
         # Detect device type based on hostname patterns and hardware info
         device_type = DeviceType.PHYSICAL
-        tags = ['source:fortigate']
+        tags = []
         
         # Check for UUID pattern (likely VMs)
         uuid_pattern = re.match(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', hostname.lower())
@@ -92,7 +92,7 @@ class DataNormalizer:
         }
         
         # Build comprehensive tags for Intune metadata
-        tags = ['source:intune']
+        tags = []
         
         # Add compliance status tag
         compliance_state = device_data.get('complianceState', 'unknown')
@@ -141,7 +141,7 @@ class DataNormalizer:
     def normalize_eset_device(device_data: Dict[str, Any]) -> CanonicalDevice:
         """Normalize ESET device data."""
         # Build comprehensive tags for ESET metadata
-        tags = ['source:eset']
+        tags = []
         
         # Add antivirus status tag
         av_status = device_data.get('antivirus_status', 'unknown')
@@ -189,7 +189,7 @@ class DataNormalizer:
             vlan_id=interface_data.get('vlan_id'),
             mtu=interface_data.get('mtu'),
             source='fortigate',
-            tags=['source:fortigate']
+            tags=[]
         )
     
     @staticmethod

@@ -59,6 +59,10 @@ class Reconciler:
         """Reconcile Intune data with NetBox."""
         results = []
         
+        # Reconcile contacts first (devices may reference them)
+        if data.get('contacts'):
+            results.append(self._reconcile_contacts(data.get('contacts', []), 'intune'))
+        
         # Reconcile devices
         results.append(self._reconcile_devices(data.get('devices', []), 'intune'))
         
@@ -519,3 +523,74 @@ class Reconciler:
         except Exception as e:
             logger.error(f"Error in _assign_ip_to_device_interface for IP {ip.address}: {e}")
             raise
+    
+    def _reconcile_contacts(self, contacts: List[Dict[str, Any]], source: str) -> SyncResult:
+        """Reconcile contacts with NetBox."""
+        start_time = time.time()
+        created = updated = 0
+        errors = []
+        contact_lookup = {}  # email -> contact_id mapping for device assignment
+        
+        with self.db_manager.get_session() as session:
+            sync_run = self.db_manager.create_sync_run(session, source, 'contacts')
+            
+            try:
+                for contact_data in contacts:
+                    try:
+                        # Create or update contact
+                        contact_result = self.netbox_client.get_or_create_contact(contact_data)
+                        contact_id = contact_result['id']
+                        contact_lookup[contact_data['email']] = contact_id
+                        
+                        # Track if it was created or updated
+                        if 'Created contact' in str(contact_result):
+                            created += 1
+                        else:
+                            updated += 1
+                            
+                        logger.info(f"Processed contact: {contact_data.get('name')} ({contact_data.get('email')})")
+                        
+                        # Assign devices to contact if specified
+                        devices_to_assign = []
+                        if contact_data.get('device_name'):
+                            devices_to_assign.append(contact_data['device_name'])
+                        if contact_data.get('devices'):
+                            devices_to_assign.extend(contact_data['devices'])
+                        
+                        for device_name in devices_to_assign:
+                            try:
+                                success = self.netbox_client.assign_device_contact(device_name, contact_id)
+                                if success:
+                                    logger.info(f"Assigned contact {contact_data['name']} to device {device_name}")
+                            except Exception as e:
+                                logger.warning(f"Could not assign contact to device {device_name}: {e}")
+                        
+                    except Exception as e:
+                        error_msg = f"Error processing contact {contact_data.get('name', 'unknown')}: {e}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                
+                duration = time.time() - start_time
+                self.db_manager.complete_sync_run(
+                    session, sync_run, created, updated, 0, errors
+                )
+                logger.info(f"Contact reconciliation completed: created={created}, updated={updated}, errors={len(errors)}")
+                
+            except Exception as e:
+                duration = time.time() - start_time
+                error_msg = f"Critical error in contact reconciliation: {e}"
+                self.db_manager.complete_sync_run(
+                    session, sync_run, created, updated, 0, errors + [error_msg]
+                )
+                logger.error(error_msg)
+                raise
+        
+        return SyncResult(
+            source=source,
+            sync_type='contacts',
+            created=created,
+            updated=updated,
+            errors=errors,
+            duration_seconds=duration,
+            timestamp=time.time()
+        )

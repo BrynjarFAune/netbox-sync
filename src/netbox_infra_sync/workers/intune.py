@@ -35,13 +35,38 @@ class IntuneWorker(BaseWorker):
             logger.info("Fetching Intune managed devices...")
             managed_devices = self.client.get_managed_devices()
             
+            # Track unique contacts for creation
+            contacts_to_create = {}
+            
             for device in managed_devices:
                 try:
                     canonical_device = self.normalizer.normalize_intune_device(device)
                     data['devices'].append(canonical_device)
+                    
+                    # Extract contact information if available
+                    user_email = device.get('userPrincipalName') or device.get('emailAddress')
+                    user_name = device.get('userDisplayName')
+                    user_id = device.get('userId')
+                    
+                    if user_email and user_email not in contacts_to_create:
+                        contacts_to_create[user_email] = {
+                            'name': user_name or user_email.split('@')[0].replace('.', ' ').title(),
+                            'email': user_email,
+                            'description': f'Contact from Intune (User ID: {user_id})',
+                            'device_name': device.get('deviceName')  # Track for assignment
+                        }
+                    elif user_email and device.get('deviceName'):
+                        # Add device to existing contact
+                        if 'devices' not in contacts_to_create[user_email]:
+                            contacts_to_create[user_email]['devices'] = []
+                        contacts_to_create[user_email]['devices'].append(device.get('deviceName'))
+                        
                 except Exception as e:
                     errors.append(f"Error normalizing device {device.get('deviceName', 'unknown')}: {e}")
                     logger.error(f"Error processing Intune device: {e}")
+            
+            # Store contacts for later processing
+            data['contacts'] = list(contacts_to_create.values())
             
             # Get Azure AD devices for additional context
             logger.info("Fetching Azure AD devices...")
