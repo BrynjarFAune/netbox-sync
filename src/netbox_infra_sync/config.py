@@ -20,16 +20,17 @@ class AppConfig:
         self.graph_client_id = os.getenv('GRAPH_CLIENT_ID')
         self.graph_client_secret = os.getenv('GRAPH_CLIENT_SECRET')
         
-        # ESET configuration
-        self.eset_base_url = os.getenv('ESET_BASE_URL')
-        self.eset_token = os.getenv('ESET_TOKEN')
+        # ESET configuration  
+        self.eset_region = os.getenv('ESET_REGION', 'eu')
+        self.eset_username = os.getenv('ESET_USERNAME', '')
+        self.eset_password = os.getenv('ESET_PASSWORD', '')
         
         # Sync configuration
         self.sync_interval_cron = os.getenv('SYNC_INTERVAL_CRON', '0 */6 * * *')
         self.delete_grace_days = int(os.getenv('DELETE_GRACE_DAYS', '7'))
         
         # Database configuration
-        self.database_url = os.getenv('DATABASE_URL', 'sqlite:///netbox_sync.db')
+        self.database_url = os.getenv('DATABASE_URL', 'sqlite:////app/data/netbox_sync.db')
         
         # Logging configuration
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')

@@ -1,111 +1,113 @@
 import logging
-from typing import Dict, List, Any, Optional
+from typing import List, Dict, Any
+import requests
 
 from ..config import AppConfig
-from .base import RateLimitedClient
 
 logger = logging.getLogger(__name__)
 
 
-class ESETClient(RateLimitedClient):
-    """ESET PROTECT API client."""
+class ESETClient:
+    """Simple ESET Management Console API client."""
     
     def __init__(self, config: AppConfig):
-        super().__init__(
-            rate_limit=config.api_rate_limit,
-            retry_attempts=config.api_retry_attempts,
-            backoff_factor=config.api_backoff_factor
-        )
-        if not config.eset_base_url or not config.eset_token:
-            raise ValueError("ESET configuration is required but not provided")
+        self.config = config
+        self.region = config.eset_region
+        self.username = config.eset_username
+        self.password = config.eset_password
+        self.access_token = None
+    
+    def _get_token(self) -> bool:
+        """Get OAuth2 token from ESET."""
+        if not self.username or not self.password:
+            return False
             
-        self.base_url = config.eset_base_url.rstrip('/')
-        self.headers = {
-            'Authorization': f'Bearer {config.eset_token}',
-            'Content-Type': 'application/json'
-        }
-    
-    def get_computers(self) -> List[Dict[str, Any]]:
-        """Get all computers from ESET."""
         try:
-            url = f"{self.base_url}/api/v1/computers"
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('computers', [])
-        except Exception as e:
-            logger.error(f"Error fetching computers: {e}")
-            raise
-    
-    def get_computer_details(self, computer_id: str) -> Dict[str, Any]:
-        """Get detailed information for a specific computer."""
-        try:
-            url = f"{self.base_url}/api/v1/computers/{computer_id}"
-            response = self.get(url, headers=self.headers)
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error fetching computer details for {computer_id}: {e}")
-            raise
-    
-    def get_threats(self, computer_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get threat information, optionally filtered by computer."""
-        try:
-            url = f"{self.base_url}/api/v1/threats"
-            if computer_id:
-                url += f"?computerId={computer_id}"
+            url = f"https://{self.region}.business-account.iam.eset.systems/oauth/token"
+            data = f"grant_type=password&username={self.username}&password={self.password}"
             
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('threats', [])
-        except Exception as e:
-            logger.error(f"Error fetching threats: {e}")
-            raise
-    
-    def get_antivirus_status(self) -> List[Dict[str, Any]]:
-        """Get antivirus status for all computers."""
-        try:
-            url = f"{self.base_url}/api/v1/status/antivirus"
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('status', [])
-        except Exception as e:
-            logger.error(f"Error fetching antivirus status: {e}")
-            raise
-    
-    def get_network_interfaces(self, computer_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get network interface information."""
-        try:
-            url = f"{self.base_url}/api/v1/network/interfaces"
-            if computer_id:
-                url += f"?computerId={computer_id}"
+            response = requests.post(
+                url,
+                headers={
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                data=data
+            )
+            
+            if response.status_code == 200:
+                token_data = response.json()
+                self.access_token = token_data['access_token']
+                return True
+            else:
+                logger.error(f"ESET auth failed: {response.status_code}")
+                return False
                 
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('interfaces', [])
         except Exception as e:
-            logger.error(f"Error fetching network interfaces: {e}")
-            raise
+            logger.error(f"ESET authentication error: {e}")
+            return False
     
-    def get_software_inventory(self, computer_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get software inventory."""
+    def test_connection(self) -> bool:
+        """Test ESET API connectivity."""
+        if not self.username or not self.password:
+            logger.warning("ESET configuration not provided")
+            return False
+        
+        return self._get_token()
+    
+    def get_devices(self) -> List[Dict[str, Any]]:
+        """Fetch device list from ESET."""
+        if not self.username or not self.password:
+            logger.warning("ESET configuration not provided")
+            return []
+        
+        if not self.access_token and not self._get_token():
+            return []
+        
         try:
-            url = f"{self.base_url}/api/v1/software"
-            if computer_id:
-                url += f"?computerId={computer_id}"
+            # Get device UUIDs first
+            group_url = f"https://{self.region}.device-management.eset.systems/v1/device_groups/00000000-0000-0000-7001-000000000001/devices?recurseSubgroups=true&pageSize=1000"
+            
+            response = requests.get(
+                group_url,
+                headers={
+                    'Authorization': f'Bearer {self.access_token}',
+                    'Content-Type': 'application/json'
+                }
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"ESET device list error: {response.status_code}")
+                return []
+            
+            device_list = response.json()
+            uuids = [d['uuid'] for d in device_list.get('devices', [])]
+            
+            if not uuids:
+                return []
+            
+            # Get detailed device info in batches
+            devices = []
+            for i in range(0, len(uuids), 100):
+                batch = uuids[i:i+100]
+                query = '&'.join([f'devicesUuids={uuid}' for uuid in batch])
                 
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('software', [])
+                detail_url = f"https://{self.region}.device-management.eset.systems/v1/devices:batchGet?{query}"
+                
+                detail_response = requests.get(
+                    detail_url,
+                    headers={
+                        'Authorization': f'Bearer {self.access_token}',
+                        'Accept': 'application/json'
+                    }
+                )
+                
+                if detail_response.status_code == 200:
+                    batch_data = detail_response.json()
+                    devices.extend(batch_data.get('devices', []))
+                    
+            return devices
+                
         except Exception as e:
-            logger.error(f"Error fetching software inventory: {e}")
-            raise
-    
-    def get_groups(self) -> List[Dict[str, Any]]:
-        """Get computer groups."""
-        try:
-            url = f"{self.base_url}/api/v1/groups"
-            response = self.get(url, headers=self.headers)
-            data = response.json()
-            return data.get('groups', [])
-        except Exception as e:
-            logger.error(f"Error fetching groups: {e}")
-            raise
+            logger.error(f"Error fetching ESET devices: {e}")
+            return []
