@@ -14,8 +14,13 @@ from .reconciler.sync import Reconciler
 
 load_dotenv()
 
+# Initialize config first to get log level
+config = AppConfig()
+
+# Configure logging with the proper level
+log_level = getattr(logging, config.log_level.upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -27,7 +32,7 @@ def cli(ctx):
     """NetBox Infrastructure Sync Tool."""
     ctx.ensure_object(dict)
     try:
-        ctx.obj['config'] = AppConfig()
+        ctx.obj['config'] = config
     except Exception as e:
         logger.error(f"Configuration error: {e}")
         sys.exit(1)
