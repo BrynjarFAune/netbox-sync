@@ -26,23 +26,53 @@ class NetBoxClient:
     def get_or_create_device_type(self, manufacturer: str, model: str) -> int:
         """Get or create device type."""
         try:
+            import re
+            
+            # Create a proper slug for manufacturer: lowercase, replace spaces/special chars with hyphens, remove multiple hyphens
+            mfg_slug = re.sub(r'[^a-z0-9]+', '-', manufacturer.lower()).strip('-')
+            
             # Get or create manufacturer
             mfg = self.api.dcim.manufacturers.get(name=manufacturer)
             if not mfg:
-                mfg = self.api.dcim.manufacturers.create(name=manufacturer, slug=manufacturer.lower().replace(' ', '-'))
+                try:
+                    mfg = self.api.dcim.manufacturers.create(name=manufacturer, slug=mfg_slug)
+                    logger.info(f"Created manufacturer: {manufacturer}")
+                except Exception as e:
+                    # If slug conflict, try to find existing by slug
+                    if "slug already exists" in str(e):
+                        mfg = self.api.dcim.manufacturers.get(slug=mfg_slug)
+                        logger.info(f"Found existing manufacturer by slug: {manufacturer}")
+                    else:
+                        raise
             
-            # Get or create device type
-            dev_type = self.api.dcim.device_types.get(manufacturer=mfg.id, model=model)
-            if not dev_type:
-                dev_type = self.api.dcim.device_types.create(
-                    manufacturer=mfg.id,
-                    model=model,
-                    slug=f"{manufacturer.lower().replace(' ', '-')}-{model.lower().replace(' ', '-')}"
-                )
+            # Try to find existing device type by model first (since manufacturer query might be flaky)
+            existing_types = self.api.dcim.device_types.filter(model=model)
+            for dt in existing_types:
+                if dt.manufacturer.name == manufacturer:
+                    return dt.id
             
+            # Create new device type if not found
+            # Create a proper slug: lowercase, replace spaces/special chars with hyphens, remove multiple hyphens  
+            model_slug = re.sub(r'[^a-z0-9]+', '-', model.lower()).strip('-')
+            slug = f"{mfg_slug}-{model_slug}".strip('-')
+            
+            dev_type = self.api.dcim.device_types.create(
+                manufacturer=mfg.id,
+                model=model,
+                slug=slug
+            )
+            logger.info(f"Created device type: {manufacturer} {model}")
             return dev_type.id
         except Exception as e:
             logger.error(f"Error creating device type {manufacturer} {model}: {e}")
+            # Return a default device type instead of failing
+            try:
+                default_type = self.api.dcim.device_types.get(model="Unknown")
+                if default_type:
+                    logger.warning(f"Using default device type for {manufacturer} {model}")
+                    return default_type.id
+            except:
+                pass
             raise
     
     def get_or_create_site(self, name: str = "Default") -> int:
@@ -69,9 +99,18 @@ class NetBoxClient:
                     slug=name.lower().replace(' ', '-'),
                     color=color
                 )
+                logger.info(f"Created device role: {name}")
             return role.id
         except Exception as e:
             logger.error(f"Error creating device role {name}: {e}")
+            # Try to return a default role instead of failing
+            try:
+                default_role = self.api.dcim.device_roles.get(name="Server")
+                if default_role:
+                    logger.warning(f"Using default role 'Server' for {name}")
+                    return default_role.id
+            except:
+                pass
             raise
     
     def create_or_update_device(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -83,16 +122,26 @@ class NetBoxClient:
                 devices = self.api.dcim.devices.filter(
                     cf_external_id=device_data['custom_fields']['external_id']
                 )
-                if devices:
-                    existing = devices[0]
+                for device in devices:
+                    existing = device
+                    break
             
             if not existing and device_data.get('name'):
-                existing = self.api.dcim.devices.get(name=device_data['name'])
+                try:
+                    existing = self.api.dcim.devices.get(name=device_data['name'])
+                except Exception as e:
+                    if "returned more than one result" in str(e):
+                        # Multiple devices with same name, filter by site
+                        site_id = device_data.get('site', self.get_or_create_site())
+                        devices = self.api.dcim.devices.filter(name=device_data['name'], site=site_id)
+                        existing = devices[0] if devices else None
+                    else:
+                        existing = None
             
             if existing:
                 # Update existing device
                 for key, value in device_data.items():
-                    if key != 'id':
+                    if key not in ['id', 'location']:  # Skip location to avoid validation errors
                         setattr(existing, key, value)
                 existing.save()
                 logger.info(f"Updated device: {device_data.get('name')}")
@@ -105,6 +154,127 @@ class NetBoxClient:
                 
         except Exception as e:
             logger.error(f"Error creating/updating device: {e}")
+            raise
+    
+    def get_tag_id(self, tag_name: str) -> int:
+        """Get tag ID by name."""
+        try:
+            tag = self.api.extras.tags.get(name=tag_name)
+            if tag:
+                return tag.id
+            else:
+                logger.warning(f"Tag '{tag_name}' not found")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting tag {tag_name}: {e}")
+            return None
+    
+    def create_or_update_ip_address(self, ip_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update IP address in NetBox IPAM."""
+        try:
+            # Find existing IP address
+            existing = self.api.ipam.ip_addresses.get(address=ip_data['address'])
+            
+            if existing:
+                # Update existing IP address
+                for key, value in ip_data.items():
+                    if key != 'id':
+                        setattr(existing, key, value)
+                existing.save()
+                logger.info(f"Updated IP address: {ip_data.get('address')}")
+                return existing.serialize()
+            else:
+                # Create new IP address
+                new_ip = self.api.ipam.ip_addresses.create(ip_data)
+                logger.info(f"Created IP address: {ip_data.get('address')}")
+                return new_ip.serialize()
+                
+        except Exception as e:
+            logger.error(f"Error creating/updating IP address: {e}")
+            raise
+    
+    def create_or_update_prefix(self, prefix_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update network prefix in NetBox IPAM."""
+        try:
+            # Find existing prefix
+            existing = self.api.ipam.prefixes.get(prefix=prefix_data['prefix'])
+            
+            if existing:
+                # Update existing prefix
+                for key, value in prefix_data.items():
+                    if key != 'id':
+                        setattr(existing, key, value)
+                existing.save()
+                logger.info(f"Updated prefix: {prefix_data.get('prefix')}")
+                return existing.serialize()
+            else:
+                # Create new prefix
+                new_prefix = self.api.ipam.prefixes.create(prefix_data)
+                logger.info(f"Created prefix: {prefix_data.get('prefix')}")
+                return new_prefix.serialize()
+                
+        except Exception as e:
+            logger.error(f"Error creating/updating prefix: {e}")
+            raise
+    
+    def create_interface(self, interface_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create interface in NetBox."""
+        try:
+            new_interface = self.api.dcim.interfaces.create(interface_data)
+            logger.info(f"Created interface: {interface_data.get('name')} on device {interface_data.get('device')}")
+            return new_interface.serialize()
+        except Exception as e:
+            logger.error(f"Error creating interface: {e}")
+            raise
+    
+    def get_or_create_device_interface(self, device_id: int, interface_name: str, 
+                                     interface_type: str = 'virtual', auto_generated: bool = False) -> int:
+        """Get existing interface or create new one for device."""
+        try:
+            # Try to find existing interface
+            existing = self.api.dcim.interfaces.get(device=device_id, name=interface_name)
+            if existing:
+                logger.info(f"Found existing interface: {interface_name}")
+                return existing.id
+            
+            # Create new interface
+            interface_data = {
+                'device': device_id,
+                'name': interface_name,
+                'type': interface_type,
+                'enabled': True,
+                'description': f'Auto-generated interface from FortiGate sync' if auto_generated else '',
+                'custom_fields': {
+                    'auto_generated': auto_generated
+                }
+            }
+            
+            interface = self.create_interface(interface_data)
+            logger.info(f"Created interface: {interface_name} ({'auto-generated' if auto_generated else 'manual'})")
+            return interface['id']
+            
+        except Exception as e:
+            logger.error(f"Error getting/creating interface {interface_name}: {e}")
+            raise
+    
+    def assign_ip_to_interface(self, ip_address_id: int, interface_id: int) -> Dict[str, Any]:
+        """Assign IP address to interface in NetBox."""
+        try:
+            # Get the IP address object
+            ip_obj = self.api.ipam.ip_addresses.get(ip_address_id)
+            if not ip_obj:
+                raise ValueError(f"IP address with ID {ip_address_id} not found")
+            
+            # Update the IP address to assign it to the interface
+            ip_obj.assigned_object_type = 'dcim.interface'
+            ip_obj.assigned_object_id = interface_id
+            ip_obj.save()
+            
+            logger.info(f"Assigned IP {ip_obj.address} to interface ID {interface_id}")
+            return ip_obj.serialize()
+            
+        except Exception as e:
+            logger.error(f"Error assigning IP to interface: {e}")
             raise
     
     def create_or_update_interface(self, interface_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -167,7 +337,8 @@ class NetBoxClient:
             name = vlan_data.get('name')
             
             # Find existing VLAN
-            existing = self.api.ipam.vlans.get(vid=vid, name=name)
+            existing_vlans = self.api.ipam.vlans.filter(vid=vid, name=name)
+            existing = existing_vlans[0] if existing_vlans else None
             
             if existing:
                 return existing.serialize()

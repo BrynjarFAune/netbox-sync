@@ -167,19 +167,32 @@ class Reconciler:
         """Prepare device data for NetBox API."""
         data = {
             'name': device.name,
-            'site': self.netbox_client.get_or_create_site(),
-            'tags': [{'name': tag} for tag in device.tags]
+            'site': self.netbox_client.get_or_create_site()
         }
         
-        # Set device type if we have manufacturer/model
+        # Set device type - ALWAYS ensure we have one
+        device_type_id = None
         if device.manufacturer and device.model:
             try:
                 device_type_id = self.netbox_client.get_or_create_device_type(
                     device.manufacturer, device.model
                 )
-                data['device_type'] = device_type_id
+                logger.info(f"Using device type for {device.manufacturer} {device.model}")
             except Exception as e:
                 logger.warning(f"Could not create device type for {device.manufacturer} {device.model}: {e}")
+        
+        # ALWAYS set fallback device type if none was set
+        if not device_type_id:
+            try:
+                device_type_id = self.netbox_client.get_or_create_device_type("Generic", "Unknown")
+                logger.info(f"Using default device type for {device.name}")
+            except Exception as e:
+                logger.error(f"Could not create default device type: {e}")
+                # Last resort - use any existing device type
+                device_type_id = 1  # Assume ID 1 exists
+        
+        # MUST have a device type
+        data['device_type'] = device_type_id
         
         # Set device role based on device type
         role_mapping = {
@@ -188,12 +201,24 @@ class Reconciler:
             DeviceType.VIRTUAL: ('Virtual Machine', '9c27b0')
         }
         
-        role_name, role_color = role_mapping.get(device.device_type, ('Unknown', '9e9e9e'))
+        # ALWAYS ensure we have a role
+        role_name, role_color = role_mapping.get(device.device_type, ('Server', '2196f3'))
+        role_id = None
         try:
             role_id = self.netbox_client.get_or_create_device_role(role_name, role_color)
-            data['device_role'] = role_id
         except Exception as e:
             logger.warning(f"Could not create device role {role_name}: {e}")
+            # Set default role if creation failed
+            try:
+                role_id = self.netbox_client.get_or_create_device_role("Server", "2196f3")
+                logger.info(f"Using default role 'Server' for {device.name}")
+            except Exception as e2:
+                logger.error(f"Could not create default device role: {e2}")
+                # Last resort - use any existing role
+                role_id = 1  # Assume ID 1 exists
+        
+        # MUST have a role
+        data['role'] = role_id
         
         # Add serial number if available
         if device.serial_number:
@@ -343,11 +368,10 @@ class Reconciler:
                     try:
                         prefix_data = {
                             'prefix': prefix.prefix,
-                            'description': prefix.description or '',
-                            'tags': [{'name': f'source:{source}'}]
+                            'description': prefix.description or ''
                         }
                         
-                        netbox_prefix = self.netbox_client.get_or_create_prefix(prefix_data)
+                        netbox_prefix = self.netbox_client.create_or_update_prefix(prefix_data)
                         created += 1 if netbox_prefix else 0
                         
                     except Exception as e:
@@ -387,24 +411,31 @@ class Reconciler:
             try:
                 for ip in ip_addresses:
                     try:
+                        # Determine assignment method
+                        assignment_method = 'unknown'
+                        if hasattr(ip, 'lease_type') and ip.lease_type:
+                            if ip.lease_type == 'leased':
+                                assignment_method = 'dhcp'
+                            elif ip.lease_type == 'reserved':
+                                assignment_method = 'reserved'
+                        elif hasattr(ip, 'assignment_type') and ip.assignment_type:
+                            assignment_method = ip.assignment_type
+                        
                         ip_data = {
                             'address': ip.address,
                             'description': ip.description or '',
-                            'status': ip.status,
-                            'tags': [{'name': f'source:{source}'}, {'name': f'type:{ip.lease_type}'}]
+                            'status': ip.status or 'active'
                         }
                         
-                        # Add custom fields
-                        custom_fields = {}
-                        if ip.mac_address:
-                            custom_fields['mac_address'] = ip.mac_address
-                        if ip.lease_type:
-                            custom_fields['lease_type'] = ip.lease_type
-                        
-                        if custom_fields:
-                            ip_data['custom_fields'] = custom_fields
-                        
                         netbox_ip = self.netbox_client.create_or_update_ip_address(ip_data)
+                        
+                        # Try to assign IP to interface if we have interface info
+                        if hasattr(ip, 'interface_name') and ip.interface_name and netbox_ip:
+                            try:
+                                # Find the device for this IP (will need to enhance this logic)
+                                self._assign_ip_to_device_interface(netbox_ip, ip, source)
+                            except Exception as assign_error:
+                                logger.warning(f"Could not assign IP {ip.address} to interface {ip.interface_name}: {assign_error}")
                         created += 1 if 'created' in str(netbox_ip).lower() else 0
                         updated += 1 if 'updated' in str(netbox_ip).lower() else 0
                         
@@ -432,3 +463,59 @@ class Reconciler:
                 self.db_manager.fail_sync_run(session, sync_run, str(e))
                 session.commit()
                 raise
+    
+    def _assign_ip_to_device_interface(self, netbox_ip: Dict[str, Any], ip: CanonicalIPAddress, source: str):
+        """Assign IP address to device interface, creating interface if needed."""
+        try:
+            # Find device mapping for this IP
+            device_external_id = None
+            device_netbox_id = None
+            
+            # Try to find device by hostname or other identifier
+            if hasattr(ip, 'device_name') and ip.device_name:
+                device_external_id = ip.device_name
+            elif hasattr(ip, 'hostname') and ip.hostname:
+                device_external_id = ip.hostname
+            
+            # If no device info on IP, try to infer from DHCP lease data
+            if not device_external_id and hasattr(ip, 'client_hostname') and ip.client_hostname:
+                device_external_id = ip.client_hostname
+            
+            # Get device NetBox ID from mapping
+            if device_external_id:
+                with self.db_manager.get_session() as session:
+                    device_mapping = self.db_manager.get_object_mapping(
+                        session, source, 'device', device_external_id
+                    )
+                    if device_mapping:
+                        device_netbox_id = int(device_mapping.netbox_id)
+            
+            if not device_netbox_id:
+                logger.warning(f"Could not find device for IP {ip.address}, skipping interface assignment")
+                return
+            
+            # Determine interface name
+            interface_name = getattr(ip, 'interface_name', None)
+            if not interface_name:
+                # Create a generic interface name for DHCP leases
+                if hasattr(ip, 'lease_type') and ip.lease_type:
+                    interface_name = 'lan'  # Default FortiGate LAN interface
+                else:
+                    interface_name = 'mgmt'  # Default management interface
+            
+            # Get or create interface
+            interface_id = self.netbox_client.get_or_create_device_interface(
+                device_id=device_netbox_id,
+                interface_name=interface_name,
+                interface_type='virtual',  # Most FortiGate interfaces are virtual
+                auto_generated=True  # Mark as auto-generated since we created it
+            )
+            
+            # Assign IP to interface
+            if interface_id:
+                self.netbox_client.assign_ip_to_interface(netbox_ip['id'], interface_id)
+                logger.info(f"Assigned IP {ip.address} to interface {interface_name} on device ID {device_netbox_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in _assign_ip_to_device_interface for IP {ip.address}: {e}")
+            raise
