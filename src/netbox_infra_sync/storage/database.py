@@ -200,6 +200,40 @@ class DatabaseManager:
         else:
             self.create_object_mapping(session, source, object_type, external_id, netbox_id)
     
+    def calculate_hash(self, data: Dict[str, Any]) -> str:
+        """Calculate SHA256 hash of data for change detection."""
+        import hashlib
+        import json
+        
+        # Create a deterministic string representation
+        data_str = json.dumps(data, sort_keys=True, default=str)
+        return hashlib.sha256(data_str.encode('utf-8')).hexdigest()
+    
+    def update_last_seen(self, session: Session, state: SyncState):
+        """Update last_seen timestamp for a sync state."""
+        state.last_seen = datetime.utcnow()
+    
+    def upsert_sync_state(self, session: Session, source: str, object_type: str,
+                         external_id: str, data_hash: str, netbox_id: str = None):
+        """Update or create sync state (upsert)."""
+        state = self.get_sync_state(session, source, object_type, external_id)
+        
+        if state:
+            state.data_hash = data_hash
+            state.last_seen = datetime.utcnow()
+            if netbox_id:
+                state.netbox_id = netbox_id
+        else:
+            state = SyncState(
+                source=source,
+                object_type=object_type,
+                external_id=external_id,
+                data_hash=data_hash,
+                netbox_id=netbox_id,
+                last_seen=datetime.utcnow()
+            )
+            session.add(state)
+    
     def mark_stale_objects(self, session: Session, source: str, object_type: str,
                           current_external_ids: List[str]):
         """Mark objects as stale if they weren't seen in current sync."""

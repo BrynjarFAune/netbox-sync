@@ -594,3 +594,265 @@ class Reconciler:
             duration_seconds=duration,
             timestamp=time.time()
         )
+    
+    def reconcile_license_data(self, data: Dict[str, List[Any]]) -> List[SyncResult]:
+        """Reconcile license data with NetBox licenses plugin."""
+        results = []
+        
+        # Check if licenses plugin is available
+        if not self.netbox_client.licenses.is_available():
+            logger.warning("NetBox licenses plugin not available, skipping license sync")
+            return [SyncResult(
+                source='licenses',
+                sync_type='licenses',
+                created=0,
+                updated=0,
+                errors=['NetBox licenses plugin not available'],
+                duration_seconds=0.0
+            )]
+        
+        # Reconcile licenses
+        results.append(self._reconcile_licenses(data.get('licenses', []), 'licenses'))
+        
+        # Reconcile license instances
+        results.append(self._reconcile_license_instances(data.get('license_instances', []), 'licenses'))
+        
+        return results
+    
+    def _reconcile_licenses(self, licenses: List[Dict[str, Any]], source: str) -> SyncResult:
+        """Reconcile licenses with NetBox using state tracking."""
+        start_time = time.time()
+        created = updated = 0
+        errors = []
+        
+        with self.db_manager.get_session() as session:
+            sync_run = self.db_manager.create_sync_run(session, source, 'licenses')
+            
+            try:
+                for license_data in licenses:
+                    try:
+                        # Generate external ID and data hash for change detection
+                        external_id = f"{license_data.get('vendor_name', 'Microsoft')}-{license_data.get('name', 'Unknown')}"
+                        data_hash = self.db_manager.calculate_hash(license_data)
+                        
+                        # Check if license already exists and hasn't changed
+                        existing_state = self.db_manager.get_sync_state(
+                            session, source, 'license', external_id
+                        )
+                        
+                        if existing_state and existing_state.data_hash == data_hash:
+                            # Update last_seen timestamp only
+                            self.db_manager.update_last_seen(session, existing_state)
+                            logger.debug(f"License unchanged: {license_data.get('name')}")
+                            continue
+                        
+                        # Get or create manufacturer (vendor) - with caching
+                        vendor_name = license_data.get('vendor_name', 'Microsoft')
+                        vendor_mapping = self.db_manager.get_object_mapping(
+                            session, source, 'manufacturer', vendor_name
+                        )
+                        
+                        if vendor_mapping:
+                            vendor_id = vendor_mapping.netbox_id
+                        else:
+                            vendor = self.netbox_client.api.dcim.manufacturers.get(name=vendor_name)
+                            if not vendor:
+                                import re
+                                vendor_slug = re.sub(r'[^a-z0-9]+', '-', vendor_name.lower()).strip('-')
+                                vendor = self.netbox_client.api.dcim.manufacturers.create(
+                                    name=vendor_name, 
+                                    slug=vendor_slug
+                                )
+                                logger.info(f"Created manufacturer: {vendor_name}")
+                            vendor_id = str(vendor.id)
+                            # Cache the mapping
+                            self.db_manager.create_object_mapping(
+                                session, source, 'manufacturer', vendor_name, vendor_id
+                            )
+                        
+                        # Get tenant mapping - with caching
+                        tenant_id = None
+                        tenant_mapping = self.db_manager.get_object_mapping(
+                            session, source, 'tenant', 'Dualog AS'
+                        )
+                        if tenant_mapping:
+                            tenant_id = tenant_mapping.netbox_id
+                        else:
+                            try:
+                                tenant = self.netbox_client.api.tenancy.tenants.get(name='Dualog AS')
+                                if tenant:
+                                    tenant_id = str(tenant.id)
+                                    self.db_manager.create_object_mapping(
+                                        session, source, 'tenant', 'Dualog AS', tenant_id
+                                    )
+                            except:
+                                pass
+                        
+                        # Prepare license data for NetBox
+                        netbox_license_data = {
+                            'name': license_data.get('name', 'Unknown'),
+                            'vendor': int(vendor_id),
+                            'assignment_type': 124,  # Your content type ID
+                            'price': 0.0,
+                            'comments': f"Microsoft SKU: {license_data.get('sku_id', '')}"
+                        }
+                        
+                        if tenant_id:
+                            netbox_license_data['tenant'] = int(tenant_id)
+                        
+                        # Create or update license only if needed
+                        netbox_id = None
+                        if existing_state and existing_state.netbox_id:
+                            # Update existing license
+                            netbox_id = existing_state.netbox_id
+                            try:
+                                response = self.netbox_client.patch(
+                                    f'/api/plugins/licenses/licenses/{existing_state.netbox_id}/',
+                                    json=netbox_license_data
+                                )
+                                if response.status_code in [200, 201]:
+                                    updated += 1
+                                    logger.info(f"Updated license: {license_data.get('name')}")
+                            except Exception as e:
+                                if "400" in str(e) and "already exists" in str(e):
+                                    logger.debug(f"License already exists: {license_data.get('name')}")
+                                else:
+                                    raise
+                        else:
+                            # Create new license
+                            result = self.netbox_client.licenses.create_or_update_license(netbox_license_data)
+                            if result:
+                                created += 1
+                                netbox_id = str(result['id'])
+                                logger.info(f"Created license: {license_data.get('name')}")
+                                
+                                # Store the mapping
+                                self.db_manager.create_object_mapping(
+                                    session, source, 'license', external_id, netbox_id
+                                )
+                        
+                        # Update sync state
+                        if netbox_id:
+                            self.db_manager.upsert_sync_state(
+                                session, source, 'license', external_id, data_hash, netbox_id
+                            )
+                        
+                    except Exception as e:
+                        error_msg = f"Error processing license {license_data.get('name', 'unknown')}: {e}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                
+                duration = time.time() - start_time
+                self.db_manager.complete_sync_run(
+                    session, sync_run, created, updated, 0, errors
+                )
+                session.commit()
+                
+                result = SyncResult(
+                    source=source,
+                    sync_type='licenses',
+                    created=created,
+                    updated=updated,
+                    errors=errors,
+                    duration_seconds=duration
+                )
+                
+                logger.info(
+                    f"{source} licenses sync: created={created}, updated={updated}, "
+                    f"errors={len(errors)}, duration={duration:.2f}s"
+                )
+                
+                return result
+                
+            except Exception as e:
+                self.db_manager.fail_sync_run(session, sync_run, str(e))
+                session.commit()
+                raise
+    
+    def _reconcile_license_instances(self, instances: List[Dict[str, Any]], source: str) -> SyncResult:
+        """Reconcile license instances with NetBox."""
+        start_time = time.time()
+        created = updated = 0
+        errors = []
+        
+        with self.db_manager.get_session() as session:
+            sync_run = self.db_manager.create_sync_run(session, source, 'license_instances')
+            
+            try:
+                for instance_data in instances:
+                    try:
+                        # Find the license in NetBox
+                        license = self.netbox_client.licenses.get_license_by_name_and_vendor(
+                            instance_data.get('license_name', 'Unknown'),
+                            'Microsoft'
+                        )
+                        
+                        if not license:
+                            error_msg = f"License not found: {instance_data.get('license_name')}"
+                            errors.append(error_msg)
+                            logger.error(error_msg)
+                            continue
+                        
+                        # Try to find assigned device in NetBox
+                        assigned_object_id = None
+                        assigned_object_type = 124  # Default content type
+                        
+                        if instance_data.get('assigned_devices'):
+                            # Try to find one of the assigned devices
+                            for device_name in instance_data['assigned_devices']:
+                                try:
+                                    device = self.netbox_client.api.dcim.devices.get(name=device_name)
+                                    if device:
+                                        assigned_object_id = device.id
+                                        break
+                                except:
+                                    continue
+                        
+                        # Prepare instance data
+                        netbox_instance_data = {
+                            'license': license['id'],
+                            'assigned_object_type': assigned_object_type,
+                            'comments': f"Assigned to: {instance_data.get('assigned_to_email', 'Unknown')}"
+                        }
+                        
+                        if assigned_object_id:
+                            netbox_instance_data['assigned_object_id'] = assigned_object_id
+                        
+                        # Create license instance
+                        result = self.netbox_client.licenses.create_license_instance(netbox_instance_data)
+                        
+                        if result:
+                            created += 1
+                            logger.debug(f"Created license instance for {instance_data.get('assigned_to_email')}")
+                        
+                    except Exception as e:
+                        error_msg = f"Error processing license instance for {instance_data.get('assigned_to_email', 'unknown')}: {e}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                
+                duration = time.time() - start_time
+                self.db_manager.complete_sync_run(
+                    session, sync_run, created, updated, 0, errors
+                )
+                session.commit()
+                
+                result = SyncResult(
+                    source=source,
+                    sync_type='license_instances',
+                    created=created,
+                    updated=updated,
+                    errors=errors,
+                    duration_seconds=duration
+                )
+                
+                logger.info(
+                    f"{source} license instances sync: created={created}, updated={updated}, "
+                    f"errors={len(errors)}, duration={duration:.2f}s"
+                )
+                
+                return result
+                
+            except Exception as e:
+                self.db_manager.fail_sync_run(session, sync_run, str(e))
+                session.commit()
+                raise

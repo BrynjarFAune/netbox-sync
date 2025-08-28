@@ -10,6 +10,7 @@ from .storage.database import init_database
 from .workers.fortigate import FortiGateWorker
 from .workers.intune import IntuneWorker
 from .workers.eset import ESETWorker
+from .workers.licenses import LicenseWorker
 from .reconciler.sync import Reconciler
 
 load_dotenv()
@@ -39,7 +40,7 @@ def cli(ctx):
 
 
 @cli.command()
-@click.argument('source', type=click.Choice(['fortigate', 'intune', 'eset', 'all']))
+@click.argument('source', type=click.Choice(['fortigate', 'intune', 'eset', 'licenses', 'all']))
 @click.pass_context
 def sync(ctx, source: str):
     """Sync infrastructure data from specified source(s)."""
@@ -64,6 +65,12 @@ def sync(ctx, source: str):
             data = worker.fetch_data()
             reconciler = Reconciler(config)
             reconciler.reconcile_eset_data(data)
+            
+        if source == 'licenses' or source == 'all':
+            worker = LicenseWorker(config)
+            data = worker.fetch_data()
+            reconciler = Reconciler(config)
+            reconciler.reconcile_license_data(data)
             
         logger.info(f"Sync completed for source: {source}")
         

@@ -138,3 +138,30 @@ class IntuneClient(RateLimitedClient):
         except Exception as e:
             logger.error(f"Error fetching users: {e}")
             raise
+    
+    def get_user_licenses(self, user_email: str) -> List[Dict[str, Any]]:
+        """Get license assignments for a specific user."""
+        try:
+            # Get user by email first
+            user_response = self.get(f"{self.base_url}/users/{user_email}", headers=self._get_headers())
+            user = user_response.json()
+            
+            # Get user with license details
+            licenses_response = self.get(f"{self.base_url}/users/{user['id']}", headers=self._get_headers())
+            user_with_licenses = licenses_response.json()
+            
+            return user_with_licenses.get('assignedLicenses', [])
+            
+        except Exception as e:
+            logger.error(f"Error fetching licenses for user {user_email}: {e}")
+            return []
+    
+    def get_subscribed_skus(self) -> List[Dict[str, Any]]:
+        """Get all subscribed SKUs (available licenses)."""
+        try:
+            response = self.get(f"{self.base_url}/subscribedSkus", headers=self._get_headers())
+            data = response.json()
+            return data.get('value', [])
+        except Exception as e:
+            logger.error(f"Error fetching subscribed SKUs: {e}")
+            return []

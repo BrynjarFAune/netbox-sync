@@ -4,11 +4,13 @@ import pynetbox
 
 from ..config import AppConfig
 from .base import RateLimitedClient
+from .netbox_plugins.base import PluginClientMixin
+from .netbox_plugins.licenses_client import LicensesPluginClient
 
 logger = logging.getLogger(__name__)
 
 
-class NetBoxClient:
+class NetBoxClient(PluginClientMixin):
     """NetBox API client."""
     
     def __init__(self, config: AppConfig):
@@ -22,6 +24,9 @@ class NetBoxClient:
             retry_attempts=config.api_retry_attempts,
             backoff_factor=config.api_backoff_factor
         )
+        
+        # Initialize plugin clients
+        self.licenses = LicensesPluginClient(self)
     
     def get_or_create_device_type(self, manufacturer: str, model: str) -> int:
         """Get or create device type."""
@@ -431,3 +436,22 @@ class NetBoxClient:
         # For now, we'll skip implementation as it requires careful handling
         logger.info(f"Stale object cleanup for source {source} (grace period: {grace_days} days)")
         # TODO: Implement stale object cleanup
+    
+    # HTTP methods for plugin support
+    def get(self, endpoint: str, **kwargs):
+        """Make GET request to NetBox API."""
+        url = f"{self.config.netbox_url.rstrip('/')}{endpoint}"
+        headers = {'Authorization': f'Token {self.config.netbox_token}'}
+        return self.client.get(url, headers=headers, **kwargs)
+    
+    def post(self, endpoint: str, **kwargs):
+        """Make POST request to NetBox API."""
+        url = f"{self.config.netbox_url.rstrip('/')}{endpoint}"
+        headers = {'Authorization': f'Token {self.config.netbox_token}', 'Content-Type': 'application/json'}
+        return self.client.post(url, headers=headers, **kwargs)
+    
+    def patch(self, endpoint: str, **kwargs):
+        """Make PATCH request to NetBox API."""
+        url = f"{self.config.netbox_url.rstrip('/')}{endpoint}"
+        headers = {'Authorization': f'Token {self.config.netbox_token}', 'Content-Type': 'application/json'}
+        return self.client.patch(url, headers=headers, **kwargs)
